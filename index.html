@@ -1,535 +1,186 @@
-// init.js
-// Usage: node init.js
-const fs = require('fs');
+// chat-app.js
+// Run: npm init -y && npm install express socket.io
+// Then: node chat-app.js
+// Open browser at http://localhost:3000
+
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const path = require('path');
 
-function write(filePath, content) {
-  const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(filePath, content, 'utf8');
-  console.log('Created', filePath);
-}
-
-function gen() {
-  const root = process.cwd();
-  const base = p => path.join(root, 'whatsapp-web-plus', p || '');
-
-  // Backend
-  write(base('backend/package.json'), `{
-  "name": "whatsapp-web-plus-backend",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
-    "ws": "^8.18.0",
-    "cors": "^2.8.5",
-    "morgan": "^1.10.0",
-    "body-parser": "^1.20.2"
-  }
-}`);
-  write(base('backend/.env.example'), `PORT=3001
-VERIFY_TOKEN=replace-with-a-random-string
-WHATSAPP_TOKEN=replace-with-your-permanent-access-token
-PHONE_NUMBER_ID=replace-with-your-phone-number-id
-`);
-  write(base('backend/db.js'), `// Simple in-memory store (swap with Postgres later)
-export const db = {
-  contacts: new Map(),
-  conversations: new Map(),
-  messages: new Map(),
+// Allowed users and tokens
+const ALLOWED_USERS = {
+  ethan: 'TOKEN_ETHAN_123',
+  partner: 'TOKEN_PARTNER_456',
 };
 
-export function getConvId(phone) {
-  return \`conv_\${phone}\`;
-}
-
-export function upsertContact(phone, displayName) {
-  const c = db.contacts.get(phone) || { phone, displayName: displayName || phone, labels: [], lastSeen: null };
-  c.displayName = displayName || c.displayName;
-  c.lastSeen = Date.now();
-  db.contacts.set(phone, c);
-  return c;
-}
-
-export function upsertConversation(phone) {
-  const id = getConvId(phone);
-  const existing = db.conversations.get(id);
-  if (!existing) {
-    db.conversations.set(id, {
-      id, phone, assignedTo: null, pinned: false, status: 'open', lastMessageAt: Date.now()
-    });
-    db.messages.set(id, []);
-  } else {
-    existing.lastMessageAt = Date.now();
-  }
-  return db.conversations.get(id);
-}
-
-export function addMessage(phone, msg) {
-  const convId = getConvId(phone);
-  upsertConversation(phone);
-  const arr = db.messages.get(convId);
-  const record = { id: \`\${convId}_\${arr.length + 1}\`, createdAt: Date.now(), ...msg };
-  arr.push(record);
-  db.conversations.get(convId).lastMessageAt = record.createdAt;
-  return record;
-}
-
-export function listConversations() {
-  return Array.from(db.conversations.values()).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
-}
-
-export function getThread(convId) {
-  return db.messages.get(convId) || [];
-}
-`);
-  write(base('backend/server.js'), `import 'dotenv/config';
-import express from 'express';
-import bodyParser from 'body-parser';
-import fetch from 'node-fetch';
-import cors from 'cors';
-import morgan from 'morgan';
-import { WebSocketServer } from 'ws';
-import { db, upsertContact, upsertConversation, addMessage, listConversations, getThread, getConvId } from './db.js';
-
 const app = express();
-app.use(cors());
-app.use(morgan('dev'));
-app.use(bodyParser.json());
+const server = http.createServer(app);
+const io = new Server(server);
 
-const PORT = process.env.PORT || 3001;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+// Serve client HTML directly
+app.get('/', (_req, res) => {
+  res.send(`
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Two-person chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+    .row { display: flex; gap: 8px; margin-bottom: 12px; }
+    input, button { padding: 10px; border-radius: 8px; border: 1px solid #333; background: #1a1a1a; color: #eee; }
+    input { flex: 1; }
+    #chat { border: 1px solid #333; border-radius: 12px; padding: 12px; min-height: 300px; background: #0d0d0d; }
+    .msg { margin: 8px 0; }
+    .me { color: #8ad; }
+    .them { color: #ad8; }
+    .sys { color: #aaa; font-size: 0.9em; }
+    .typing { font-style: italic; color: #888; height: 20px; }
+    .presence { font-size: 0.9em; color: #bbb; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>Private chat</h2>
 
-// WebSocket for realtime updates
-const wss = new WebSocketServer({ noServer: true });
-const sockets = new Set();
+    <div class="row">
+      <input id="username" placeholder="Username (ethan or partner)" />
+      <input id="token" placeholder="Token" />
+      <button id="connectBtn">Connect</button>
+    </div>
 
-function broadcast(event, payload) {
-  const msg = JSON.stringify({ event, payload });
-  for (const ws of sockets) {
-    try { ws.send(msg); } catch {}
-  }
-}
+    <div id="presence" class="presence"></div>
+    <div id="typing" class="typing"></div>
+    <div id="chat"></div>
 
-const server = app.listen(PORT, () => console.log(\`Backend listening on :\${PORT}\`));
-server.on('upgrade', (req, socket, head) => {
-  if (req.url !== '/ws') {
-    socket.destroy();
-    return;
-  }
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    sockets.add(ws);
-    ws.on('close', () => sockets.delete(ws));
-  });
-});
+    <div class="row">
+      <input id="messageInput" placeholder="Type a message..." disabled />
+      <button id="sendBtn" disabled>Send</button>
+    </div>
+  </div>
 
-// Health
-app.get('/health', (_, res) => res.json({ ok: true }));
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script>
+    let socket = null;
+    const chat = document.getElementById('chat');
+    const typingEl = document.getElementById('typing');
+    const presenceEl = document.getElementById('presence');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
 
-// Webhook verification
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
-  return res.sendStatus(403);
-});
+    function addLine(text, cls = 'sys') {
+      const div = document.createElement('div');
+      div.className = \`msg \${cls}\`;
+      div.textContent = text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
 
-// Receive messages webhook
-app.post('/webhook', async (req, res) => {
-  try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0]?.value;
-    const messages = change?.messages || [];
-    const contacts = change?.contacts || [];
+    document.getElementById('connectBtn').onclick = () => {
+      const username = document.getElementById('username').value.trim();
+      const token = document.getElementById('token').value.trim();
+      if (!username || !token) return alert('Enter username and token');
 
-    messages.forEach((msg) => {
-      const from = msg.from;
-      const profileName = contacts?.[0]?.profile?.name;
-      upsertContact(from, profileName);
-      upsertConversation(from);
+      socket = io('/', { auth: { username, token } });
 
-      const type = msg.type;
-      let body = '';
-      let mediaUrl = null;
-      if (type === 'text') body = msg.text?.body || '';
-      else if (type === 'image') mediaUrl = msg.image?.link;
-      else if (type === 'audio') mediaUrl = msg.audio?.link;
-      else if (type === 'document') mediaUrl = msg.document?.link;
-      else body = \`[\${type}]\`;
-
-      const saved = addMessage(from, {
-        direction: 'in',
-        type,
-        body,
-        mediaUrl,
-        status: 'received'
+      socket.on('connect', () => {
+        addLine('Connected', 'sys');
+        messageInput.disabled = false;
+        sendBtn.disabled = false;
       });
 
-      broadcast('message:new', { conversationId: getConvId(from), message: saved });
-    });
+      socket.on('connect_error', (err) => {
+        addLine('Auth error: ' + err.message, 'sys');
+      });
 
-    res.sendStatus(200);
-  } catch (e) {
-    console.error('Webhook error', e);
-    res.sendStatus(200);
-  }
-});
+      socket.on('presence', (p) => {
+        presenceEl.textContent = \`Status: \${p.user} is \${p.type}. Online: \${p.onlineUsers.join(', ')}\`;
+      });
 
-// List conversations
-app.get('/conversations', (req, res) => {
-  res.json(listConversations().map(c => ({
-    ...c,
-    contact: db.contacts.get(c.phone) || { phone: c.phone, displayName: c.phone }
-  })));
-});
+      socket.on('typing', ({ user, isTyping }) => {
+        typingEl.textContent = isTyping ? \`\${user} is typing...\` : '';
+      });
 
-// Thread by conversation ID
-app.get('/conversations/:id', (req, res) => {
-  const convId = req.params.id;
-  const conv = db.conversations.get(convId);
-  if (!conv) return res.status(404).json({ error: 'Not found' });
-  const contact = db.contacts.get(conv.phone) || { phone: conv.phone, displayName: conv.phone };
-  res.json({ conversation: conv, contact, messages: getThread(convId) });
-});
+      socket.on('message', (msg) => {
+        const me = document.getElementById('username').value.trim();
+        const who = msg.from === me ? 'me' : 'them';
+        const time = new Date(msg.timestamp).toLocaleTimeString();
+        addLine(\`[\${time}] \${msg.from}: \${msg.text}\`, who);
+      });
+    };
 
-// Send message
-app.post('/send', async (req, res) => {
-  const { to, text } = req.body;
-  if (!to || !text) return res.status(400).json({ error: 'Missing to or text' });
-
-  const url = \`https://graph.facebook.com/v21.0/\${PHONE_NUMBER_ID}/messages\`;
-  const payload = { messaging_product: 'whatsapp', to, text: { body: text } };
-
-  try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': \`Bearer \${WHATSAPP_TOKEN}\`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-    const json = await r.json();
-
-    upsertContact(to);
-    upsertConversation(to);
-    const saved = addMessage(to, {
-      direction: 'out',
-      type: 'text',
-      body: text,
-      status: r.ok ? 'sent' : 'error'
-    });
-    broadcast('message:new', { conversationId: getConvId(to), message: saved });
-
-    return res.status(r.ok ? 200 : 400).json(json);
-  } catch (e) {
-    console.error('Send error', e);
-    return res.status(500).json({ error: 'Send failed' });
-  }
-});
-`);
-
-  // Frontend
-  write(base('frontend/package.json'), `{
-  "name": "whatsapp-web-plus-frontend",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview --port 4173"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "vite": "^5.4.0"
-  }
-}`);
-  write(base('frontend/vite.config.js'), `export default {
-  server: { port: 5173 }
-};`);
-  write(base('frontend/index.html'), `<!doctype html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>WhatsApp Web Plus</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
-`);
-  write(base('frontend/src/styles.css'), `:root {
-  --bg: #0b141a;
-  --panel: #111b21;
-  --text: #e9edef;
-  --muted: #8696a0;
-  --accent: #25d366;
-  --bubble-in: #202c33;
-  --bubble-out: #005c4b;
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-.app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; }
-.sidebar { background: var(--panel); border-right: 1px solid #222; overflow: auto; }
-.header { padding: 12px; border-bottom: 1px solid #222; display: flex; gap: 8px; align-items: center; }
-.search { flex: 1; background: #1f2b33; border: none; color: var(--text); padding: 8px; border-radius: 6px; }
-.item { width: 100%; text-align: left; padding: 12px; border-bottom: 1px solid #222; background: transparent; color: var(--text); cursor: pointer; }
-.item:hover { background: #162029; }
-.name { font-weight: 600; }
-.preview { color: var(--muted); font-size: 12px; }
-.meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
-.thread { display: grid; grid-template-rows: auto 56px; height: 100vh; }
-.messages { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
-.msg { max-width: 70%; padding: 8px 12px; border-radius: 10px; position: relative; }
-.msg.in { align-self: flex-start; background: var(--bubble-in); }
-.msg.out { align-self: flex-end; background: var(--bubble-out); }
-.body { white-space: pre-wrap; word-break: break-word; }
-.time { font-size: 11px; color: var(--muted); margin-top: 6px; text-align: right; }
-.composer { background: var(--panel); border-top: 1px solid #222; display: flex; gap: 8px; align-items: center; padding: 8px; }
-.textarea { flex: 1; background: #1f2b33; border: none; color: var(--text); padding: 10px; border-radius: 6px; resize: none; height: 40px; }
-.button { background: var(--accent); color: black; border: none; padding: 8px 12px; border-radius: 6px; cursor: pointer; }
-.button:disabled { opacity: 0.6; cursor: not-allowed; }
-.rightpanel { display: none; }
-`);
-  write(base('frontend/src/api.js'), `const API = { base: 'http://localhost:3001' };
-
-export async function fetchConversations() {
-  const r = await fetch(\`\${API.base}/conversations\`);
-  return r.json();
-}
-export async function fetchThread(id) {
-  const r = await fetch(\`\${API.base}/conversations/\${id}\`);
-  if (!r.ok) throw new Error('Not found');
-  return r.json();
-}
-export async function sendMessage(to, text) {
-  const r = await fetch(\`\${API.base}/send\`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to, text })
-  });
-  const json = await r.json();
-  return { ok: r.ok, json };
-}
-export function connectWS(onEvent) {
-  const ws = new WebSocket(\`ws://localhost:3001/ws\`);
-  ws.onmessage = (ev) => {
-    try { onEvent?.(JSON.parse(ev.data)); } catch {}
-  };
-  return ws;
-}
-`);
-  write(base('frontend/src/store.js'), `import { fetchConversations, fetchThread, connectWS } from './api';
-
-export class Store {
-  constructor(onChange) {
-    this.onChange = onChange;
-    this.state = { conversations: [], activeId: null, activeThread: null, search: '' };
-    this.ws = null;
-  }
-  async load() {
-    this.state.conversations = await fetchConversations();
-    if (this.state.conversations[0]) {
-      this.setActive(this.state.conversations[0].id);
-    } else {
-      this.onChange(this.state);
-    }
-    this.ws = connectWS((evt) => this.handleWS(evt));
-  }
-  async setActive(id) {
-    this.state.activeId = id;
-    this.state.activeThread = await fetchThread(id);
-    this.onChange(this.state);
-  }
-  handleWS(evt) {
-    if (evt.event === 'message:new') {
-      const { conversationId, message } = evt.payload;
-      const conv = this.state.conversations.find(c => c.id === conversationId);
-      if (conv) conv.lastMessageAt = message.createdAt;
-      if (this.state.activeId === conversationId && this.state.activeThread) {
-        this.state.activeThread.messages.push(message);
-        this.onChange(this.state);
+    messageInput.addEventListener('input', () => {
+      if (socket && socket.connected) {
+        socket.emit('typing', messageInput.value.length > 0);
       }
-    }
-  }
-  setSearch(q) { this.state.search = q; this.onChange(this.state); }
-}
-`);
-  write(base('frontend/src/components/Sidebar.jsx'), `import React from 'react';
+    });
 
-export default function Sidebar({ conversations, search, onSearch, onSelect }) {
-  const filtered = conversations.filter(c => {
-    const name = c.contact?.displayName || c.phone;
-    const last = c.lastMessageAt ? new Date(c.lastMessageAt).toLocaleString() : '';
-    return name.toLowerCase().includes(search.toLowerCase()) || last.includes(search);
+    sendBtn.onclick = () => {
+      const text = messageInput.value.trim();
+      if (!text || !socket || !socket.connected) return;
+      socket.emit('message', { text });
+      messageInput.value = '';
+      socket.emit('typing', false);
+    };
+  </script>
+</body>
+</html>
+  `);
+});
+
+// Auth middleware
+io.use((socket, next) => {
+  const { username, token } = socket.handshake.auth || {};
+  if (!username || !token) return next(new Error('Missing auth'));
+  const valid = ALLOWED_USERS[username] === token;
+  if (!valid) return next(new Error('Unauthorized'));
+  socket.data.username = username;
+  return next();
+});
+
+let onlineUsers = new Set();
+
+io.on('connection', (socket) => {
+  const user = socket.data.username;
+  onlineUsers.add(user);
+
+  socket.broadcast.emit('presence', {
+    type: 'online',
+    user,
+    onlineUsers: Array.from(onlineUsers),
   });
 
-  return (
-    <div className="sidebar">
-      <div className="header">
-        <input className="search" placeholder="Search contacts…" value={search} onChange={e => onSearch(e.target.value)} />
-        <button className="button" onClick={() => location.reload()}>Refresh</button>
-      </div>
-      <div>
-        {filtered.map(c => (
-          <button key={c.id} className="item" onClick={() => onSelect(c.id)}>
-            <div className="name">{c.contact?.displayName || c.phone}</div>
-            <div className="preview">{c.phone}</div>
-            <div className="meta">{new Date(c.lastMessageAt).toLocaleString()}</div>
-          </button>
-        ))}
-        {filtered.length === 0 && (
-          <div className="item">
-            <div className="name">No conversations yet</div>
-            <div className="preview">Send a message to start a thread.</div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-`);
-  write(base('frontend/src/components/Thread.jsx'), `import React from 'react';
+  socket.on('message', (payload) => {
+    const msg = {
+      from: user,
+      text: payload?.text || '',
+      timestamp: payload?.timestamp || Date.now(),
+    };
+    socket.broadcast.emit('message', msg);
+    socket.emit('message', msg);
+  });
 
-export default function Thread({ thread }) {
-  if (!thread) return <div className="thread"><div className="messages">Loading…</div></div>;
-  const { contact, messages } = thread;
+  socket.on('typing', (isTyping) => {
+    socket.broadcast.emit('typing', { user, isTyping: !!isTyping });
+  });
 
-  return (
-    <div className="thread">
-      <div className="messages">
-        <div style={{ marginBottom: 8, color: '#8696a0' }}>
-          Chat with {contact.displayName || contact.phone}
-        </div>
-        {messages.map(m => (
-          <div key={m.id} className={m.direction === 'in' ? 'msg in' : 'msg out'}>
-            <div className="body">
-              {m.type === 'text' && m.body}
-              {m.type !== 'text' && (m.mediaUrl ? \`Media: \${m.mediaUrl}\` : \`[\${m.type}]\`)}
-            </div>
-            <div className="time">{new Date(m.createdAt).toLocaleTimeString()}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-`);
-  write(base('frontend/src/components/Composer.jsx'), `import React, { useState } from 'react';
-import { sendMessage } from '../api';
+  socket.on('disconnect', () => {
+    onlineUsers.delete(user);
+    socket.broadcast.emit('presence', {
+      type: 'offline',
+      user,
+      onlineUsers: Array.from(onlineUsers),
+    });
+  });
+});
 
-export default function Composer({ toPhone, onSent }) {
-  const [text, setText] = useState('');
-  const [sending, setSending] = useState(false);
-
-  async function handleSend() {
-    const msg = text.trim();
-    if (!msg || !toPhone) return;
-    setSending(true);
-    const { ok } = await sendMessage(toPhone, msg);
-    setSending(false);
-    if (ok) {
-      setText('');
-      onSent?.();
-    } else {
-      alert('Send failed. Check your API keys and messaging window rules.');
-    }
-  }
-
-  function onKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  }
-
-  return (
-    <div className="composer">
-      <textarea
-        className="textarea"
-        placeholder="Type a message… (Enter to send)"
-        value={text}
-        onChange={e => setText(e.target.value)}
-        onKeyDown={onKeyDown}
-      />
-      <button className="button" onClick={handleSend} disabled={sending}>Send</button>
-    </div>
-  );
-}
-`);
-  write(base('frontend/src/App.jsx'), `import React, { useEffect, useState } from 'react';
-import './styles.css';
-import Sidebar from './components/Sidebar';
-import Thread from './components/Thread';
-import Composer from './components/Composer';
-import { Store } from './store';
-
-const store = new Store((s) => setState({ ...s }));
-
-export default function App() {
-  const [state, setState] = useState(store.state);
-
-  useEffect(() => { store.load(); }, []);
-
-  const activePhone = (() => {
-    const conv = state.conversations.find(c => c.id === state.activeId);
-    return conv?.phone;
-  })();
-
-  return (
-    <div className="app">
-      <Sidebar
-        conversations={state.conversations}
-        search={state.search}
-        onSearch={(q) => store.setSearch(q)}
-        onSelect={(id) => store.setActive(id)}
-      />
-      <div>
-        <Thread thread={state.activeThread} />
-        <Composer toPhone={activePhone} onSent={() => { /* WS updates */ }} />
-      </div>
-    </div>
-  );
-}
-`);
-  write(base('frontend/src/main.jsx'), `import React from 'react';
-import { createRoot } from 'react-dom/client';
-import App from './App';
-
-createRoot(document.getElementById('root')).render(<App />);
-`);
-
-  console.log('\n✅ Project generated at whatsapp-web-plus');
-  console.log('Next steps:');
-  console.log('1) cd whatsapp-web-plus/backend && cp .env.example .env && edit .env with your tokens');
-  console.log('2) npm install && npm run dev');
-  console.log('3) Open new terminal: cd ../frontend && npm install && npm run dev');
-  console.log('4) Configure webhook to POST to https://YOUR_PUBLIC_URL/webhook with your verify token');
-}
-
-gen();                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  s.Hunger += 10;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            s.Energy -= 10;
-
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    // Traps
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            if (s.Traps > 0) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        int caught = 0;
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(\`Chat app running at http://localhost:\${PORT}\`);
+});                                                                                                                                                                                                                                                                                                                                              int caught = 0;
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     for (int i=0;i<s.Traps;i++) if (rand01() < 0.35) caught++;
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 s.Food += caught;
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             if (caught > 0) {
