@@ -1,75 +1,285 @@
-// forest99.cpp
-#include <bits/stdc++.h>
-using namespace std;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>99 Nights in the Forest (JavaScript)</title>
+<style>
+  body { font-family: system-ui, Arial, sans-serif; background:#0f1410; color:#e6e6e6; margin:0; }
+  .wrap { max-width: 900px; margin: 24px auto; padding: 16px; }
+  .panel { background:#1a231a; border:1px solid #2c3a2c; border-radius:12px; padding:16px; margin-bottom:16px; }
+  .title { font-weight:700; font-size:20px; margin-bottom:8px; }
+  .stats { line-height:1.6; white-space:pre-line; }
+  .msg { min-height:44px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:10px; }
+  button { background:#2f5a2f; color:#fff; border:none; border-radius:8px; padding:10px 12px; cursor:pointer; font-weight:600; }
+  button:disabled { opacity:0.55; cursor:not-allowed; }
+  .footer { opacity:0.7; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <div class="title">99 Nights in the Forest</div>
+    <div id="stats" class="stats"></div>
+  </div>
 
-struct Stats {
-    int Health = 100;
-        int Hunger = 0;
-            int Energy = 100;
-                int Wood = 0;
-                    int Food = 0;
-                        int Shelter = 0;
-                            int Traps = 0;
-                                int Night = 0;
-                                };
+  <div class="panel msg" id="msg"></div>
 
-                                static mt19937 rng([]{
-                                    std::random_device rd;
-                                        return mt19937(rd() ^ (unsigned)chrono::high_resolution_clock::now().time_since_epoch().count());
-                                        }());
+  <div class="panel">
+    <div class="title">Day actions</div>
+    <div class="grid" id="buttons"></div>
+    <div class="footer" id="actionsLeft"></div>
+  </div>
 
-                                        int randInt(int a, int b) {
-                                            uniform_int_distribution<int> d(a, b);
-                                                return d(rng);
-                                                }
-                                                double rand01() {
-                                                    uniform_real_distribution<double> d(0.0, 1.0);
-                                                        return d(rng);
-                                                        }
+  <div class="panel footer">
+    Survive until dawn after Night 99. Balance energy, hunger, and health.
+  </div>
+</div>
 
-                                                        namespace StatsUtil {
-                                                            void Clamp(Stats& s) {
-                                                                    s.Health = max(0, min(100, s.Health));
-                                                                            s.Hunger = max(0, min(100, s.Hunger));
-                                                                                    s.Energy = max(0, min(100, s.Energy));
-                                                                                            s.Shelter = max(0, s.Shelter);
-                                                                                                }
-                                                                                                }
+<script>
+(() => {
+  // --- RNG utilities ---
+  const rng = {
+    int(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; },
+    prob(p) { return Math.random() < p; }
+  };
 
-                                                                                                namespace Actions {
-                                                                                                    pair<bool,string> GatherWood(Stats& s) {
-                                                                                                            if (s.Energy < 15) return {false, "Too tired."};
-                                                                                                                    s.Energy -= 15;
-                                                                                                                            int w = randInt(3,7);
-                                                                                                                                    s.Wood += w;
-                                                                                                                                            return {true, "Gathered " + to_string(w) + " wood."};
-                                                                                                                                                }
-                                                                                                                                                    pair<bool,string> Forage(Stats& s) {
-                                                                                                                                                            if (s.Energy < 20) return {false, "Too tired."};
-                                                                                                                                                                    s.Energy -= 20;
-                                                                                                                                                                            int f = randInt(1,4);
-                                                                                                                                                                                    int thorn = randInt(0,5);
-                                                                                                                                                                                            s.Food += f;
-                                                                                                                                                                                                    s.Health -= thorn;
-                                                                                                                                                                                                            return {true, "Found " + to_string(f) + " food. Thorns (-" + to_string(thorn) + " health)."};
-                                                                                                                                                                                                                }
-                                                                                                                                                                                                                    pair<bool,string> Rest(Stats& s) {
-                                                                                                                                                                                                                            int gain = randInt(20,35);
-                                                                                                                                                                                                                                    s.Energy += gain;
-                                                                                                                                                                                                                                            s.Hunger += 5;
-                                                                                                                                                                                                                                                    return {true, "Rested, +" + to_string(gain) + " energy. Hunger +5."};
-                                                                                                                                                                                                                                                        }
-                                                                                                                                                                                                                                                            pair<bool,string> Cook(Stats& s) {
-                                                                                                                                                                                                                                                                    if (s.Energy < 10) return {false, "Too tired."};
-                                                                                                                                                                                                                                                                            if (s.Food <= 0) return {false, "No food to cook."};
-                                                                                                                                                                                                                                                                                    s.Energy -= 10;
-                                                                                                                                                                                                                                                                                            int cookQty = min(s.Food, 3);
-                                                                                                                                                                                                                                                                                                    s.Food -= cookQty;
-                                                                                                                                                                                                                                                                                                            s.Food += cookQty * 2; // cooked food counts double (simple buff)
-                                                                                                                                                                                                                                                                                                                    return {true, "Cooked " + to_string(cookQty) + " food (counts double at night)."};
-                                                                                                                                                                                                                                                                                                                        }
-                                                                                                                                                                                                                                                                                                                            pair<bool,string> CraftShelter(Stats& s) {
-                                                                                                                                                                                                                                                                                                                                    if (s.Energy < 25) return {false, "Too tired."};
+  // --- Game state ---
+  const Stats = () => ({
+    Health: 100,
+    Hunger: 0,
+    Energy: 100,
+    Wood: 0,
+    Food: 0,
+    Shelter: 0,
+    Traps: 0,
+    Night: 0
+  });
+
+  function clamp(s) {
+    s.Health = Math.max(0, Math.min(100, s.Health));
+    s.Hunger = Math.max(0, Math.min(100, s.Hunger));
+    s.Energy = Math.max(0, Math.min(100, s.Energy));
+    s.Shelter = Math.max(0, s.Shelter);
+  }
+
+  // --- Actions ---
+  const Actions = {
+    GatherWood(s) {
+      if (s.Energy < 15) return [false, "Too tired."];
+      s.Energy -= 15;
+      const w = rng.int(3, 7);
+      s.Wood += w;
+      return [true, `Gathered ${w} wood.`];
+    },
+    Forage(s) {
+      if (s.Energy < 20) return [false, "Too tired."];
+      s.Energy -= 20;
+      const f = rng.int(1, 4);
+      const thorn = rng.int(0, 5);
+      s.Food += f;
+      s.Health -= thorn;
+      return [true, `Found ${f} food. Thorns (-${thorn} health).`];
+    },
+    Rest(s) {
+      const gain = rng.int(20, 35);
+      s.Energy += gain;
+      s.Hunger += 5;
+      return [true, `Rested, +${gain} energy. Hunger +5.`];
+    },
+    Cook(s) {
+      if (s.Energy < 10) return [false, "Too tired."];
+      if (s.Food <= 0) return [false, "No food to cook."];
+      s.Energy -= 10;
+      const cookQty = Math.min(s.Food, 3);
+      s.Food -= cookQty;
+      s.Food += cookQty * 2; // cooked counts double (simple buff)
+      return [true, `Cooked ${cookQty} food (counts double at night).`];
+    },
+    CraftShelter(s) {
+      if (s.Energy < 25) return [false, "Too tired."];
+      if (s.Wood < 6) return [false, "Need 6 wood."];
+      if (s.Shelter >= 10) return [false, "Shelter maxed."];
+      s.Energy -= 25;
+      s.Wood -= 6;
+      s.Shelter += 1;
+      return [true, `Shelter reinforced. Now ${s.Shelter}.`];
+    },
+    SetTrap(s) {
+      if (s.Energy < 10) return [false, "Too tired."];
+      if (s.Wood < 2) return [false, "Need 2 wood."];
+      s.Energy -= 10;
+      s.Wood -= 2;
+      s.Traps += 1;
+      return [true, `Trap set. Total ${s.Traps}.`];
+    },
+    EatNow(s) {
+      if (s.Energy < 5) return [false, "Too tired."];
+      if (s.Food <= 0) return [false, "No food."];
+      s.Energy -= 5;
+      s.Food -= 1;
+      s.Hunger = Math.max(0, s.Hunger - 20);
+      return [true, "Ate a meal. Hunger -20."];
+    },
+    Scout(s) {
+      if (s.Energy < 10) return [false, "Too tired."];
+      s.Energy -= 10;
+      const chance = 0.25 + rng.int(0, 10) / 100;
+      if (rng.prob(chance)) {
+        const w = rng.int(2, 5);
+        const f = rng.int(1, 3);
+        s.Wood += w; s.Food += f;
+        return [true, `Cache found! +${w} wood, +${f} food.`];
+      } else {
+        const scratch = rng.int(0, 3);
+        s.Health -= scratch;
+        return [true, `Nothing found. Scrape (-${scratch} health).`];
+      }
+    },
+    Skip(s) { return [true, "Saving energy for night."]; }
+  };
+
+  // --- Night resolution ---
+  function resolveNight(s, log) {
+    s.Night += 1;
+
+    s.Hunger += 10;
+    s.Energy -= 10;
+
+    if (s.Traps > 0) {
+      let caught = 0;
+      for (let i = 0; i < s.Traps; i++) if (rng.prob(0.35)) caught++;
+      s.Food += caught;
+      if (caught > 0) log.push(`Traps caught ${caught} food.`);
+    }
+
+    if (s.Hunger >= 60 && s.Food > 0) {
+      const meals = Math.min(2, s.Food);
+      s.Food -= meals;
+      s.Hunger = Math.max(0, s.Hunger - meals * 25);
+      log.push(`Auto-ate ${meals} meal(s) to stave off hunger.`);
+    }
+
+    const cold = rng.int(0, 1) === 1;
+    if (cold) {
+      const coldDmg = Math.max(0, 8 - s.Shelter);
+      s.Health -= coldDmg;
+      log.push(`A cold wind howls (-${coldDmg} health).`);
+    }
+
+    const wolfBase = 0.10 + (s.Night * 0.005);
+    if (rng.prob(wolfBase)) {
+      const dmg = Math.max(2, 18 - (s.Shelter * 2));
+      s.Health -= dmg;
+      log.push(`Wolves circle your camp! (-${dmg} health)`);
+      if (s.Wood >= 2) {
+        s.Wood -= 2;
+        log.push(`You burn extra wood to deter them (-2 wood).`);
+      }
+    }
+
+    if (s.Hunger >= 90) { s.Health -= 8; log.push("Starvation gnaws (-8 health)."); }
+    if (s.Energy <= 10) { s.Health -= 5; log.push("Exhaustion sets in (-5 health)."); }
+  }
+
+  // --- UI wiring ---
+  const statsEl = document.getElementById("stats");
+  const msgEl = document.getElementById("msg");
+  const buttonsEl = document.getElementById("buttons");
+  const actionsLeftEl = document.getElementById("actionsLeft");
+
+  const actions = [
+    "GatherWood","Forage","Rest","Cook","CraftShelter","SetTrap","EatNow","Scout","Skip"
+  ];
+
+  let s = Stats();
+  let actionsLeft = 2;
+  let phase = "Day"; // Day or Night
+  let lastLogs = [];
+
+  function render() {
+    statsEl.textContent =
+      `Night: ${s.Night}\n` +
+      `Health: ${s.Health} | Hunger: ${s.Hunger} | Energy: ${s.Energy}\n` +
+      `Wood: ${s.Wood} | Food: ${s.Food} | Shelter: ${s.Shelter} | Traps: ${s.Traps}`;
+    msgEl.textContent = lastLogs.join("\n");
+    actionsLeftEl.textContent = `Actions left: ${actionsLeft} (${phase})`;
+    for (const btn of buttonsEl.querySelectorAll("button")) {
+      btn.disabled = phase !== "Day" || actionsLeft <= 0;
+    }
+  }
+
+  // Build buttons
+  actions.forEach(name => {
+    const btn = document.createElement("button");
+    btn.textContent = name;
+    btn.addEventListener("click", () => {
+      if (phase !== "Day" || actionsLeft <= 0) return;
+      const [ok, msg] = Actions[name](s);
+      lastLogs = [msg];
+      if (ok) {
+        if (name === "Skip") {
+          actionsLeft = 0;
+        } else {
+          actionsLeft -= 1;
+        }
+      }
+      clamp(s);
+      render();
+
+      if (actionsLeft <= 0) {
+        // Night begins
+        phase = "Night";
+        lastLogs = [`--- Night ${s.Night + 1} ---`];
+        render();
+
+        // Resolve night with a small delay for effect
+        setTimeout(() => {
+          const logs = [];
+          resolveNight(s, logs);
+          clamp(s);
+          logs.push(`Night ${s.Night} ended. Health ${s.Health} | Hunger ${s.Hunger} | Energy ${s.Energy}`);
+          lastLogs = logs;
+          render();
+
+          // End conditions
+          if (s.Health <= 0) {
+            lastLogs.push(`You succumbed after ${s.Night} night(s).`);
+            render();
+            // Auto-restart after short pause
+            setTimeout(() => {
+              s = Stats(); actionsLeft = 2; phase = "Day"; lastLogs = ["New run started."];
+              render();
+            }, 1500);
+            return;
+          }
+          if (s.Night >= 99) {
+            lastLogs.push("Dawn on day 100. You survived the forest!");
+            render();
+            // Auto-restart after short pause
+            setTimeout(() => {
+              s = Stats(); actionsLeft = 2; phase = "Day"; lastLogs = ["New run started."];
+              render();
+            }, 2000);
+            return;
+          }
+
+          // New day
+          phase = "Day";
+          actionsLeft = 2;
+          lastLogs.push("New day begins.");
+          render();
+        }, 450);
+      }
+    });
+    buttonsEl.appendChild(btn);
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>                                                                                                                                                                                                                                                                                           if (s.Energy < 25) return {false, "Too tired."};
                                                                                                                                                                                                                                                                                                                                             if (s.Wood < 6) return {false, "Need 6 wood."};
                                                                                                                                                                                                                                                                                                                                                     if (s.Shelter >= 10) return {false, "Shelter maxed."};
                                                                                                                                                                                                                                                                                                                                                             s.Energy -= 25;
