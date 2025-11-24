@@ -1,4 +1,4 @@
-// chat-app.js
+       // chat-app.js
 // Run: npm init -y && npm install express socket.io
 // Then: node chat-app.js
 // Open browser at http://localhost:3000
@@ -7,11 +7,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
-// Allowed users and tokens
-const ALLOWED_USERS = {
-  ethan: 'ETHAN_SECRET_TOKEN_2025',      // <-- Your token
-  partner: 'Angi_SECRET_TOKEN_2025',  // <-- Send this one to your partner
-};
+// Allowed tokens
+const ALLOWED_TOKENS = ['2811', '2009'];
 
 const app = express();
 const server = http.createServer(app);
@@ -46,8 +43,7 @@ app.get('/', (_req, res) => {
     <h2>Private chat</h2>
 
     <div class="row">
-      <input id="username" placeholder="Username (ethan or partner)" />
-      <input id="token" placeholder="Token" />
+      <input id="token" placeholder="Enter your token (2811 or 2009)" />
       <button id="connectBtn">Connect</button>
     </div>
 
@@ -64,6 +60,7 @@ app.get('/', (_req, res) => {
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
     let socket = null;
+    let myToken = null;
     const chat = document.getElementById('chat');
     const typingEl = document.getElementById('typing');
     const presenceEl = document.getElementById('presence');
@@ -79,11 +76,10 @@ app.get('/', (_req, res) => {
     }
 
     document.getElementById('connectBtn').onclick = () => {
-      const username = document.getElementById('username').value.trim();
-      const token = document.getElementById('token').value.trim();
-      if (!username || !token) return alert('Enter username and token');
+      myToken = document.getElementById('token').value.trim();
+      if (!myToken) return alert('Enter your token');
 
-      socket = io('/', { auth: { username, token } });
+      socket = io('/', { auth: { token: myToken } });
 
       socket.on('connect', () => {
         addLine('Connected', 'sys');
@@ -104,8 +100,7 @@ app.get('/', (_req, res) => {
       });
 
       socket.on('message', (msg) => {
-        const me = document.getElementById('username').value.trim();
-        const who = msg.from === me ? 'me' : 'them';
+        const who = msg.from === myToken ? 'me' : 'them';
         const time = new Date(msg.timestamp).toLocaleTimeString();
         addLine(\`[\${time}] \${msg.from}: \${msg.text}\`, who);
       });
@@ -132,18 +127,18 @@ app.get('/', (_req, res) => {
 
 // Auth middleware
 io.use((socket, next) => {
-  const { username, token } = socket.handshake.auth || {};
-  if (!username || !token) return next(new Error('Missing auth'));
-  const valid = ALLOWED_USERS[username] === token;
+  const { token } = socket.handshake.auth || {};
+  if (!token) return next(new Error('Missing token'));
+  const valid = ALLOWED_TOKENS.includes(token);
   if (!valid) return next(new Error('Unauthorized'));
-  socket.data.username = username;
+  socket.data.token = token;
   return next();
 });
 
 let onlineUsers = new Set();
 
 io.on('connection', (socket) => {
-  const user = socket.data.username;
+  const user = socket.data.token;
   onlineUsers.add(user);
 
   socket.broadcast.emit('presence', {
@@ -179,9 +174,7 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(\`Chat app running at http://localhost:\${PORT}\`);
-});                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              s.Health -= coldDmg;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    cout << "A cold wind howls (-" << coldDmg << " health).\n";
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
+});                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     }
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     // Wolves
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             double wolfBase = 0.10 + (s.Night * 0.005);
