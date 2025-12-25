@@ -1,0 +1,446 @@
+/**
+ * Single-file: Spotify ➜ YouTube playlist transfer
+ *
+ * What it does:
+ * - OAuth with Spotify and Google (YouTube Data API v3)
+ * - Fetches your Spotify playlists and tracks
+ * - Creates corresponding YouTube playlists and adds matched videos
+ * - Simple embedded frontend (no build, no static files)
+ *
+ * Setup:
+ * 1) npm i express axios dotenv cookie-session querystring
+ * 2) Create .env with:
+ *    PORT=3000
+ *    SESSION_SECRET=replace_with_a_long_random_string
+ *    SPOTIFY_CLIENT_ID=your_spotify_client_id
+ *    SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+ *    SPOTIFY_REDIRECT_URI=http://localhost:3000/callback/spotify
+ *    GOOGLE_CLIENT_ID=your_google_client_id
+ *    GOOGLE_CLIENT_SECRET=your_google_client_secret
+ *    GOOGLE_REDIRECT_URI=http://localhost:3000/callback/google
+ * 3) node server.js
+ * 4) Open http://localhost:3000, login to both, load playlists, transfer
+ *
+ * Notes:
+ * - YouTube Music doesn't have a public API; we use YouTube Data API (video playlists).
+ * - Matching is heuristic; expects official/Topic/VEVO uploads for most songs.
+ */
+
+const express = require('express');
+const axios = require('axios');
+const qs = require('querystring');
+const dotenv = require('dotenv');
+const cookieSession = require('cookie-session');
+
+dotenv.config();
+const app = express();
+
+// Middleware
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieSession({
+  name: 'session',
+  secret: process.env.SESSION_SECRET || 'change_me',
+  maxAge: 24 * 60 * 60 * 1000,
+}));
+
+// --- Frontend (embedded HTML) ---
+app.get('/', (req, res) => {
+  res.send(`
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Playlist Transfer (Spotify ➜ YouTube)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --border:#e5e5e5; --muted:#666; --green:#1db954; --blue:#4285F4; }
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Arial,sans-serif;margin:20px}
+    header{margin-bottom:12px}
+    .subtitle{color:var(--muted);margin-top:-4px}
+    .btn{padding:10px 14px;border:none;border-radius:6px;color:#fff;background:#333;cursor:pointer;margin-right:8px;margin-bottom:8px}
+    .btn.spotify{background:var(--green)} .btn.google{background:var(--blue)} .btn.secondary{background:#666}
+    .status{margin-top:8px;color:var(--muted)}
+    .grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+    .playlist{border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;transition:background .2s}
+    .playlist:hover{background:#f7f7f7} .playlist .name{font-weight:600} .playlist .count{color:var(--muted);font-size:.9em}
+    .log{white-space:pre-wrap;background:#fafafa;border:1px solid var(--border);padding:12px;border-radius:8px;min-height:140px}
+    footer{margin-top:16px;color:var(--muted)}
+    .inline{margin-left:8px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Transfer Spotify playlists to YouTube</h1>
+    <p class="subtitle">Login to both, pick a playlist, and clone it to YouTube.</p>
+  </header>
+
+  <section>
+    <button class="btn spotify" onclick="loginSpotify()">Login Spotify</button>
+    <button class="btn google" onclick="loginGoogle()">Login Google</button>
+    <button class="btn secondary" onclick="checkStatus()">Check status</button>
+    <div id="status" class="status"></div>
+  </section>
+
+  <section>
+    <button class="btn" onclick="loadPlaylists()">Load Spotify Playlists</button>
+    <label class="inline">Privacy:
+      <select id="privacy">
+        <option value="private">Private</option>
+        <option value="unlisted">Unlisted</option>
+        <option value="public">Public</option>
+      </select>
+    </label>
+  </section>
+
+  <section>
+    <div id="playlists" class="grid"></div>
+  </section>
+
+  <section>
+    <h2>Transfer log</h2>
+    <div id="log" class="log"></div>
+  </section>
+
+  <footer>
+    <small>Note: Uses YouTube Data API (video playlists) due to no public YouTube Music API.</small>
+  </footer>
+
+<script>
+function loginSpotify(){ window.location = '/login/spotify'; }
+function loginGoogle(){ window.location = '/login/google'; }
+
+async function checkStatus() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  document.getElementById('status').textContent =
+    'Spotify: ' + (data.spotify ? 'Connected' : 'Not connected') +
+    ' | Google: ' + (data.google ? 'Connected' : 'Not connected');
+}
+
+async function loadPlaylists() {
+  const res = await fetch('/api/spotify/playlists');
+  if (!res.ok) { log('Error: login to Spotify first'); return; }
+  const data = await res.json();
+  const container = document.getElementById('playlists');
+  container.innerHTML = '';
+  if (!data.playlists?.length) {
+    container.innerHTML = '<div>No playlists found.</div>';
+    return;
+  }
+  data.playlists.forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'playlist';
+    el.innerHTML = '<div class="name">' + p.name + '</div><div class="count">' + p.tracksTotal + ' tracks</div>';
+    el.onclick = () => transfer(p.id, p.name);
+    container.appendChild(el);
+  });
+}
+
+async function transfer(playlistId, name) {
+  const privacy = document.getElementById('privacy').value;
+  log('Starting transfer: ' + name);
+  const res = await fetch('/api/transfer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ spotifyPlaylistId: playlistId, ytPrivacy: privacy })
+  });
+  const data = await res.json();
+  if (!res.ok) { log('Transfer failed: ' + JSON.stringify(data)); return; }
+  log('Created YouTube playlist: ' + data.ytPlaylistId +
+      '\\nSuccess: ' + data.success + ' / ' + data.count +
+      '\\nFailed: ' + data.fail);
+}
+
+function log(msg){
+  const el = document.getElementById('log');
+  el.textContent = (el.textContent + '\\n' + msg).trim();
+}
+</script>
+</body>
+</html>
+  `);
+});
+
+// --- OAuth scopes ---
+const SPOTIFY_SCOPES = [
+  'playlist-read-private',
+  'playlist-read-collaborative',
+  'user-library-read'
+].join(' ');
+
+const GOOGLE_SCOPES = [
+  'https://www.googleapis.com/auth/youtube'
+].join(' ');
+
+// --- OAuth: Spotify ---
+app.get('/login/spotify', (req, res) => {
+  const params = qs.stringify({
+    client_id: process.env.SPOTIFY_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
+    scope: SPOTIFY_SCOPES,
+    state: 'spotify_state_' + Math.random().toString(36).slice(2)
+  });
+  res.redirect(`https://accounts.spotify.com/authorize?${params}`);
+});
+
+app.get('/callback/spotify', async (req, res) => {
+  const { code } = req.query;
+  try {
+    const tokenRes = await axios.post('https://accounts.spotify.com/api/token', qs.stringify({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
+      client_id: process.env.SPOTIFY_CLIENT_ID,
+      client_secret: process.env.SPOTIFY_CLIENT_SECRET
+    }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    req.session.spotify = tokenRes.data; // access_token, refresh_token, expires_in
+    res.redirect('/');
+  } catch (e) {
+    console.error('Spotify auth failed', e.response?.data || e.message);
+    res.status(500).send('Spotify auth failed');
+  }
+});
+
+async function refreshSpotifyToken(session) {
+  if (!session.spotify?.refresh_token) return;
+  try {
+    const res = await axios.post('https://accounts.spotify.com/api/token', qs.stringify({
+      grant_type: 'refresh_token',
+      refresh_token: session.spotify.refresh_token,
+      client_id: process.env.SPOTIFY_CLIENT_ID,
+      client_secret: process.env.SPOTIFY_CLIENT_SECRET
+    }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    session.spotify = { ...session.spotify, ...res.data };
+  } catch (e) {
+    console.error('Spotify refresh failed', e.response?.data || e.message);
+  }
+}
+
+async function spotifyGet(session, url, params = {}) {
+  if (!session.spotify?.access_token) throw new Error('No Spotify token');
+  await refreshSpotifyToken(session);
+  return axios.get(url, {
+    headers: { Authorization: `Bearer ${session.spotify.access_token}` },
+    params
+  });
+}
+
+// --- OAuth: Google (YouTube Data API) ---
+app.get('/login/google', (req, res) => {
+  const params = qs.stringify({
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    redirect_uri: process.env.GOOGLE_REDIRECT_URI,
+    response_type: 'code',
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: GOOGLE_SCOPES,
+    state: 'google_state_' + Math.random().toString(36).slice(2)
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+app.get('/callback/google', async (req, res) => {
+  const { code } = req.query;
+  try {
+    const tokenRes = await axios.post('https://oauth2.googleapis.com/token', {
+      code,
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: process.env.GOOGLE_REDIRECT_URI,
+      grant_type: 'authorization_code'
+    });
+    req.session.google = tokenRes.data; // access_token, refresh_token, expires_in
+    res.redirect('/');
+  } catch (e) {
+    console.error('Google auth failed', e.response?.data || e.message);
+    res.status(500).send('Google auth failed');
+  }
+});
+
+async function refreshGoogleToken(session) {
+  if (!session.google?.refresh_token) return;
+  try {
+    const res = await axios.post('https://oauth2.googleapis.com/token', {
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      refresh_token: session.google.refresh_token,
+      grant_type: 'refresh_token'
+    });
+    session.google = { ...session.google, ...res.data };
+  } catch (e) {
+    console.error('Google refresh failed', e.response?.data || e.message);
+  }
+}
+
+async function youtubeGet(session, url, params = {}) {
+  if (!session.google?.access_token) throw new Error('No Google token');
+  await refreshGoogleToken(session);
+  return axios.get(url, {
+    headers: { Authorization: `Bearer ${session.google.access_token}` },
+    params
+  });
+}
+
+async function youtubePost(session, url, body, params = {}) {
+  if (!session.google?.access_token) throw new Error('No Google token');
+  await refreshGoogleToken(session);
+  return axios.post(url, body, {
+    headers: {
+      Authorization: `Bearer ${session.google.access_token}`,
+      'Content-Type': 'application/json'
+    },
+    params
+  });
+}
+
+// --- Status endpoint ---
+app.get('/api/status', (req, res) => {
+  res.json({
+    spotify: !!req.session.spotify?.access_token,
+    google: !!req.session.google?.access_token
+  });
+});
+
+// --- Spotify playlists ---
+app.get('/api/spotify/playlists', async (req, res) => {
+  if (!req.session.spotify?.access_token) return res.status(401).json({ error: 'Not logged in to Spotify' });
+  try {
+    let playlists = [];
+    let next = 'https://api.spotify.com/v1/me/playlists';
+    while (next) {
+      const { data } = await spotifyGet(req.session, next);
+      playlists.push(...(data.items || []).map(p => ({
+        id: p.id,
+        name: p.name,
+        tracksTotal: p.tracks?.total || 0
+      })));
+      next = data.next;
+    }
+    res.json({ playlists });
+  } catch (e) {
+    console.error(e.response?.data || e.message);
+    res.status(500).json({ error: 'Failed to fetch playlists' });
+  }
+});
+
+// --- YouTube playlist creation ---
+async function createYouTubePlaylist(session, title, description = '', privacyStatus = 'private') {
+  const { data } = await youtubePost(session, 'https://www.googleapis.com/youtube/v3/playlists', {
+    snippet: { title, description },
+    status: { privacyStatus }
+  }, { part: 'snippet,status' });
+  return data.id;
+}
+
+// --- Search and match heuristics ---
+async function searchYouTubeVideoId(session, track) {
+  const baseQueries = [
+    `${track.title} ${track.artists.join(' ')}`,
+    `${track.title} - ${track.artists[0] || ''}`,
+    `${track.title} official audio ${track.artists[0] || ''}`,
+    `${track.title} topic ${track.artists[0] || ''}`
+  ];
+
+  for (const q of baseQueries) {
+    const { data } = await youtubeGet(session, 'https://www.googleapis.com/youtube/v3/search', {
+      part: 'snippet',
+      q,
+      type: 'video',
+      maxResults: 5
+    });
+    const items = data.items || [];
+    // Prefer Topic/Official/VEVO channels
+    const pick = items.find(i => {
+      const ch = (i.snippet?.channelTitle || '').toLowerCase();
+      return ch.includes('topic') || ch.includes('official') || ch.includes('vevo');
+    }) || items[0];
+
+    if (pick?.id?.videoId) return pick.id.videoId;
+  }
+  return null;
+}
+
+async function addToYouTubePlaylist(session, playlistId, videoId) {
+  await youtubePost(session, 'https://www.googleapis.com/youtube/v3/playlistItems', {
+    snippet: {
+      playlistId,
+      resourceId: { kind: 'youtube#video', videoId }
+    }
+  }, { part: 'snippet' });
+}
+
+// --- Transfer endpoint ---
+app.post('/api/transfer', async (req, res) => {
+  const { spotifyPlaylistId, ytPrivacy = 'private' } = req.body;
+  if (!req.session.spotify?.access_token) return res.status(401).json({ error: 'Login Spotify' });
+  if (!req.session.google?.access_token) return res.status(401).json({ error: 'Login Google' });
+
+  try {
+    // Get playlist name
+    const plRes = await spotifyGet(req.session, `https://api.spotify.com/v1/playlists/${spotifyPlaylistId}`);
+    const playlistName = plRes.data?.name || 'Transferred Playlist';
+
+    // Create YouTube playlist
+    const ytPlaylistId = await createYouTubePlaylist(
+      req.session,
+      playlistName,
+      'Transferred from Spotify',
+      ytPrivacy
+    );
+
+    // Fetch tracks
+    let tracks = [];
+    let next = `https://api.spotify.com/v1/playlists/${spotifyPlaylistId}/tracks`;
+    while (next) {
+      const { data } = await spotifyGet(req.session, next, {
+        fields: 'items(track(name,artists(name),album(name),external_ids(isrc),duration_ms)),next'
+      });
+      for (const item of (data.items || [])) {
+        const t = item.track;
+        if (!t) continue;
+        tracks.push({
+          title: t.name,
+          artists: (t.artists || []).map(a => a.name),
+          album: t.album?.name,
+          isrc: t.external_ids?.isrc || null,
+          durationMs: t.duration_ms
+        });
+      }
+      next = data.next;
+    }
+
+    // Transfer each track
+    let success = 0, fail = 0;
+    const results = [];
+
+    for (const track of tracks) {
+      try {
+        const videoId = await searchYouTubeVideoId(req.session, track);
+        if (!videoId) {
+          fail++;
+          results.push({ track, status: 'not_found' });
+          continue;
+        }
+        await addToYouTubePlaylist(req.session, ytPlaylistId, videoId);
+        success++;
+        results.push({ track, status: 'added', videoId });
+        await new Promise(r => setTimeout(r, 300)); // small delay for quotas
+      } catch (e) {
+        fail++;
+        results.push({ track, status: 'error', error: e.response?.data || e.message });
+      }
+    }
+
+    res.json({ ytPlaylistId, success, fail, count: tracks.length, results });
+  } catch (e) {
+    console.error(e.response?.data || e.message);
+    res.status(500).json({ error: 'Transfer failed' });
+  }
+});
+
+// --- Start server ---
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Server running on http://localhost:${port}`));
