@@ -4,15 +4,27 @@
   <meta charset="UTF-8">
   <title>Google Dino Clone</title>
   <style>
-    body { margin:0; background:#f7f7f7; overflow:hidden; }
+    body { margin:0; background:#f7f7f7; overflow:hidden; text-align:center; }
     canvas { display:block; margin:0 auto; background:#fff; border:2px solid #000; }
+    #jumpBtn {
+      margin-top:10px;
+      padding:10px 20px;
+      font-size:18px;
+      background:#333;
+      color:#fff;
+      border:none;
+      cursor:pointer;
+    }
+    #jumpBtn:active { background:#555; }
   </style>
 </head>
 <body>
 <canvas id="gameCanvas" width="800" height="200"></canvas>
+<button id="jumpBtn">Jump</button>
 <script>
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
+const jumpBtn = document.getElementById("jumpBtn");
 
 let dino = { x:50, y:150, width:40, height:40, dy:0, gravity:1.2, jumpPower:-15, grounded:true };
 let obstacles = [];
@@ -68,7 +80,7 @@ function gameLoop() {
     ctx.font = "40px Arial";
     ctx.fillText("Game Over", 300, 100);
     ctx.font = "20px Arial";
-    ctx.fillText("Press Space to Restart", 300, 140);
+    ctx.fillText("Press Space or Jump to Restart", 250, 140);
     return;
   }
 
@@ -86,20 +98,23 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
-document.addEventListener("keydown", e => {
-  if (e.code === "Space") {
-    if (gameOver) {
-      obstacles = [];
-      score = 0;
-      gameOver = false;
-      dino.y = 150; dino.dy = 0;
-      gameLoop();
-    } else if (dino.grounded) {
-      dino.dy = dino.jumpPower;
-      dino.grounded = false;
-    }
+function jumpAction() {
+  if (gameOver) {
+    obstacles = [];
+    score = 0;
+    gameOver = false;
+    dino.y = 150; dino.dy = 0;
+    gameLoop();
+  } else if (dino.grounded) {
+    dino.dy = dino.jumpPower;
+    dino.grounded = false;
   }
+}
+
+document.addEventListener("keydown", e => {
+  if (e.code === "Space") jumpAction();
 });
+jumpBtn.addEventListener("click", jumpAction);
 
 gameLoop();
 </script>
