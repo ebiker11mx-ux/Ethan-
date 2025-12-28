@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D Obby: 3 Levels</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin:0; height:100%; background:#0e0e14; font-family:system-ui, sans-serif; }
+    #hud {
+      position: fixed; top: 10px; left: 10px; color: #fff; z-index: 10;
+      background: rgba(0,0,0,0.35); padding: 8px 12px; border-radius: 8px; backdrop-filter: blur(4px);
+      font-size: 14px; line-height: 1.4;
+    }
+    #hud b { color: #7cf77c; }
+    #msg {
+      position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+      color:#fff; background: rgba(0,0,0,0.45); padding: 8px 14px; border-radius: 8px; z-index:10;
+      font-size: 13px;
+    }
+    #btnReset {
+      margin-left: 8px; padding: 6px 10px; border-radius:6px; background:#222; color:#fff; border:1px solid #444; cursor:pointer;
+    }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><b>3D Obby</b> — Level: <span id="levelNum">1</span> / 3</div>
+    <div>Controls: WASD / Arrow keys to move, Space to jump</div>
+    <div>Goal: Reach the glowing finish pad</div>
+    <button id="btnReset" title="Reset to level 1">Reset</button>
+  </div>
+  <div id="msg">Tip: Short hops are safer than full sprints.</div>
+
+  <!-- Three.js CDN -->
+  <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.157.0/examples/js/controls/OrbitControls.js"></script>
+
+  <script>
+    // Basic setup
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0e0e14);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(0, 10, 18);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enablePan = false;
+    controls.enableZoom = false;
+    controls.target.set(0, 4, 0);
+
+    // Lights
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x223344, 0.9);
+    scene.add(hemi);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+    dirLight.position.set(15, 25, 10);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.set(1024,1024);
+    scene.add(dirLight);
+
+    // Floor (void is off the platforms)
+    const floorGeo = new THREE.PlaneGeometry(200, 200);
+    const floorMat = new THREE.MeshPhongMaterial({ color: 0x0b0b10, side: THREE.DoubleSide });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Player
+    const playerGeo = new THREE.BoxGeometry(1, 2, 1);
+    const playerMat = new THREE.MeshPhongMaterial({ color: 0x77c3ff });
+    const player = new THREE.Mesh(playerGeo, playerMat);
+    player.castShadow = true;
+    scene.add(player);
+
+    // Finish pad
+    const finishGeo = new THREE.BoxGeometry(3, 0.3, 3);
+    const finishMat = new THREE.MeshPhongMaterial({ color: 0x86ff5a, emissive: 0x3cff00, emissiveIntensity: 0.7 });
+    const finishPad = new THREE.Mesh(finishGeo, finishMat);
+    finishPad.receiveShadow = true;
+    scene.add(finishPad);
+
+    // HUD
+    const levelNumEl = document.getElementById('levelNum');
+    const btnReset = document.getElementById('btnReset');
+
+    // Physics
+    const GRAVITY = -28; // m/s^2-ish
+    const JUMP_VELOCITY = 12;
+    const MOVE_ACCEL = 80;
+    const MOVE_MAX_SPEED = 10;
+    const FRICTION = 20;
+
+    const keys = { left:false, right:false, up:false, down:false, jump:false };
+    let velocity = new THREE.Vector3(0, 0, 0);
+    let onGround = false;
+
+    // Obstacles store
+    let obstacles = [];
+    let level = 1;
+
+    // Utility: AABB collision
+    function aabbIntersects(a, b) {
+      return (
+        Math.abs(a.position.x - b.position.x) * 2 < (a.userData.w + b.userData.w) &&
+        Math.abs(a.position.y - b.position.y) * 2 < (a.userData.h + b.userData.h) &&
+        Math.abs(a.position.z - b.position.z) * 2 < (a.userData.d + b.userData.d)
+      );
+    }
+
+    // Create a platform box with AABB dimensions stored
+    function makePlatform(w, h, d, color, x, y, z, { moving = null, rotating = null, disappears = null } = {}) {
+      const geo = new THREE.BoxGeometry(w, h, d);
+      const mat = new THREE.MeshPhongMaterial({ color });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData = { w, h, d, moving, rotating, disappears, basePos: new THREE.Vector3(x,y,z), timer: 0, visible: true };
+      scene.add(mesh);
+      obstacles.push(mesh);
+      return mesh;
+    }
+
+    function clearLevel() {
+      obstacles.forEach(o => scene.remove(o));
+      obstacles = [];
+    }
+
+    // Levels
+    function buildLevel1() {
+      clearLevel();
+      levelNumEl.textContent = '1';
+
+      // Start platform
+      makePlatform(6, 0.4, 6, 0x23334a, 0, 1, 0);
+      // Simple path of platforms
+      makePlatform(4, 0.4, 4, 0x29475e, 8, 1, -2);
+      makePlatform(3, 0.4, 3, 0x2f5f7a, 14, 2, -2);
+      makePlatform(3, 0.4, 3, 0x2f5f7a, 20, 3.2, -1);
+      makePlatform(3, 0.4, 3, 0x2f5f7a, 26, 4.4, 0);
+
+      // Narrow jumps
+      makePlatform(2, 0.4, 2, 0x3a779a, 32, 5.6, 0);
+      makePlatform(2, 0.4, 2, 0x3a779a, 36, 6.2, 1.5);
+
+      // Finish
+      finishPad.position.set(40, 6.6, 0);
+      finishPad.userData = { w: 3, h: 0.3, d: 3 };
+      player.position.set(0, 3, 0);
+    }
+
+    function buildLevel2() {
+      clearLevel();
+      levelNumEl.textContent = '2';
+
+      // Start
+      makePlatform(6, 0.4, 6, 0x3b2f4a, 0, 1, 0);
+
+      // Moving platforms (sinusoidal)
+      makePlatform(3, 0.4, 3, 0x563b6b, 8, 2, 0, { moving: { axis: 'x', amp: 2.5, speed: 1.2 } });
+      makePlatform(3, 0.4, 3, 0x563b6b, 14, 3, 0, { moving: { axis: 'z', amp: 2.0, speed: 1.4 } });
+      makePlatform(3, 0.4, 3, 0x563b6b, 20, 4, 0, { moving: { axis: 'x', amp: 3.0, speed: 1.0 } });
+
+      // Rotating obstacle (bar)
+      const bar = makePlatform(8, 0.3, 0.5, 0xff6b6b, 26, 2.5, 0, { rotating: { axis: 'y', speed: 1.5 } });
+
+      // Small platforms around the rotating bar
+      makePlatform(2.4, 0.4, 2.4, 0x7a4f9d, 26, 3.2, -4);
+      makePlatform(2.4, 0.4, 2.4, 0x7a4f9d, 30, 3.2, 0);
+      makePlatform(2.4, 0.4, 2.4, 0x7a4f9d, 26, 3.2, 4);
+
+      // Finish
+      finishPad.position.set(34, 3.6, 0);
+      finishPad.userData = { w: 3, h: 0.3, d: 3 };
+      player.position.set(0, 3, 0);
+    }
+
+    function buildLevel3() {
+      clearLevel();
+      levelNumEl.textContent = '3';
+
+      // Start
+      makePlatform(6, 0.4, 6, 0x2c3a2d, 0, 1, 0);
+
+      // Tight path with timed disappearing platforms
+      makePlatform(2.2, 0.4, 2.2, 0x3d6646, 6, 2, 0, { disappears: { onTime: 0.8, offTime: 0.8 } });
+      makePlatform(2.2, 0.4, 2.2, 0x3d6646, 10, 2.6, 0, { disappears: { onTime: 1.0, offTime: 0.8 } });
+      makePlatform(2.2, 0.4, 2.2, 0x3d6646, 14, 3.2, 0, { disappears: { onTime: 0.7, offTime: 1.0 } });
+
+      // Moving + disappearing combo
+      makePlatform(2.4, 0.4, 2.4, 0x4a8a5a, 18, 3.8, 0, { moving: { axis:'x', amp: 2.8, speed: 1.1 }, disappears: { onTime: 1.0, offTime: 1.0 } });
+      makePlatform(2.4, 0.4, 2.4, 0x4a8a5a, 22, 4.6, 0, { moving: { axis:'z', amp: 2.2, speed: 1.3 }, disappears: { onTime: 0.9, offTime: 0.9 } });
+
+      // Final sprint
+      makePlatform(2.0, 0.4, 2.0, 0x5cbf77, 26, 5.2, 0);
+      makePlatform(2.0, 0.4, 2.0, 0x5cbf77, 29, 5.6, 0);
+      makePlatform(2.0, 0.4, 2.0, 0x5cbf77, 32, 6.0, 0);
+
+      // Finish
+      finishPad.position.set(36, 6.4, 0);
+      finishPad.userData = { w: 3, h: 0.3, d: 3 };
+      player.position.set(0, 3, 0);
+    }
+
+    function loadLevel(n) {
+      level = n;
+      if (level === 1) buildLevel1();
+      else if (level === 2) buildLevel2();
+      else buildLevel3();
+    }
+
+    // Input
+    window.addEventListener('keydown', (e) => {
+      switch (e.code) {
+        case 'ArrowLeft':
+        case 'KeyA': keys.left = true; break;
+        case 'ArrowRight':
+        case 'KeyD': keys.right = true; break;
+        case 'ArrowUp':
+        case 'KeyW': keys.up = true; break;
+        case 'ArrowDown':
+        case 'KeyS': keys.down = true; break;
+        case 'Space': keys.jump = true; break;
+      }
+    });
+    window.addEventListener('keyup', (e) => {
+      switch (e.code) {
+        case 'ArrowLeft':
+        case 'KeyA': keys.left = false; break;
+        case 'ArrowRight':
+        case 'KeyD': keys.right = false; break;
+        case 'ArrowUp':
+        case 'KeyW': keys.up = false; break;
+        case 'ArrowDown':
+        case 'KeyS': keys.down = false; break;
+        case 'Space': keys.jump = false; break;
+      }
+    });
+
+    btnReset.addEventListener('click', () => {
+      loadLevel(1);
+    });
+
+    // Collision support: build a bounding box mesh for player (AABB)
+    function updatePlayerAABB() {
+      player.userData = { w: 1, h: 2, d: 1 };
+    }
+    updatePlayerAABB();
+
+    function handleCollisions() {
+      onGround = false;
+      const pHalfY = player.userData.h / 2;
+
+      obstacles.forEach(ob => {
+        if (ob.userData && ob.userData.visible === false) return;
+
+        if (aabbIntersects(player, ob)) {
+          const dx = (player.userData.w + ob.userData.w)/2 - Math.abs(player.position.x - ob.position.x);
+          const dy = (player.userData.h + ob.userData.h)/2 - Math.abs(player.position.y - ob.position.y);
+          const dz = (player.userData.d + ob.userData.d)/2 - Math.abs(player.position.z - ob.position.z);
+
+          // Resolve by smallest penetration axis
+          if (dx < dy && dx < dz) {
+            // Push on X
+            if (player.position.x > ob.position.x) player.position.x += dx;
+            else player.position.x -= dx;
+            velocity.x = 0;
+          } else if (dy < dz) {
+            // Push on Y (ground/ceiling)
+            if (player.position.y > ob.position.y) {
+              player.position.y += dy;
+              velocity.y = Math.max(velocity.y, 0);
+              onGround = true;
+            } else {
+              player.position.y -= dy;
+              velocity.y = Math.min(velocity.y, 0);
+            }
+          } else {
+            // Push on Z
+            if (player.position.z > ob.position.z) player.position.z += dz;
+            else player.position.z -= dz;
+            velocity.z = 0;
+          }
+        }
+      });
+
+      // Finish check
+      if (aabbIntersects(player, finishPad)) {
+        if (level < 3) loadLevel(level + 1);
+        else {
+          // Win: bounce to level 1 with message flair
+          const msg = document.getElementById('msg');
+          msg.textContent = 'GG! You finished all 3 levels. Resetting to level 1...';
+          setTimeout(() => { msg.textContent = 'Tip: Short hops are safer than full sprints.'; }, 4000);
+          setTimeout(() => loadLevel(1), 1500);
+        }
+      }
+    }
+
+    // Obstacle animation (moving/rotating/disappearing)
+    function updateObstacles(dt, t) {
+      obstacles.forEach(ob => {
+        const ud = ob.userData;
+        if (!ud) return;
+
+        // Moving
+        if (ud.moving) {
+          const { axis, amp, speed } = ud.moving;
+          const offset = Math.sin(t * speed) * amp;
+          ob.position.copy(ud.basePos);
+          if (axis === 'x') ob.position.x += offset;
+          else if (axis === 'z') ob.position.z += offset;
+        }
+
+        // Rotating
+        if (ud.rotating) {
+          const { axis, speed } = ud.rotating;
+          const angle = t * speed;
+          if (axis === 'y') ob.rotation.y = angle;
+          else if (axis === 'x') ob.rotation.x = angle;
+          else if (axis === 'z') ob.rotation.z = angle;
+        }
+
+        // Disappearing (toggle visibility on timers)
+        if (ud.disappears) {
+          ud.timer += dt;
+          const cycle = ud.disappears.onTime + ud.disappears.offTime;
+          const timeInCycle = ud.timer % cycle;
+          const visibleNow = timeInCycle <= ud.disappears.onTime;
+          if (visibleNow !== ud.visible) {
+            ud.visible = visibleNow;
+            ob.visible = visibleNow;
+          }
+        }
+      });
+    }
+
+    // Game loop
+    let lastTime = performance.now();
+    function animate(now = performance.now()) {
+      const dt = Math.min(0.033, (now - lastTime) / 1000); // clamp dt to avoid large jumps
+      lastTime = now;
+
+      // Apply gravity
+      velocity.y += GRAVITY * dt;
+
+      // Movement input
+      let inputX = 0, inputZ = 0;
+      if (keys.left) inputX -= 1;
+      if (keys.right) inputX += 1;
+      if (keys.up) inputZ -= 1;
+      if (keys.down) inputZ += 1;
+
+      // Normalize diagonal
+      if (inputX !== 0 || inputZ !== 0) {
+        const len = Math.hypot(inputX, inputZ);
+        inputX /= len; inputZ /= len;
+      }
+
+      // Accelerate
+      velocity.x += inputX * MOVE_ACCEL * dt;
+      velocity.z += inputZ * MOVE_ACCEL * dt;
+
+      // Friction
+      if (inputX === 0) {
+        if (velocity.x > 0) velocity.x = Math.max(0, velocity.x - FRICTION * dt);
+        else velocity.x = Math.min(0, velocity.x + FRICTION * dt);
+      }
+      if (inputZ === 0) {
+        if (velocity.z > 0) velocity.z = Math.max(0, velocity.z - FRICTION * dt);
+        else velocity.z = Math.min(0, velocity.z + FRICTION * dt);
+      }
+
+      // Clamp horizontal speed
+      const hSpeed = Math.hypot(velocity.x, velocity.z);
+      if (hSpeed > MOVE_MAX_SPEED) {
+        const scale = MOVE_MAX_SPEED / hSpeed;
+        velocity.x *= scale; velocity.z *= scale;
+      }
+
+      // Jump
+      if (keys.jump && onGround) {
+        velocity.y = JUMP_VELOCITY;
+        onGround = false;
+      }
+
+      // Integrate position
+      player.position.x += velocity.x * dt;
+      player.position.y += velocity.y * dt;
+      player.position.z += velocity.z * dt;
+
+      // Death zone: if you fall below floor, reset level
+      if (player.position.y < -20) {
+        loadLevel(level);
+      }
+
+      // Update obstacles
+      updateObstacles(dt, now * 0.001);
+
+      // Collisions
+      handleCollisions();
+
+      // Camera follow (soft)
+      const camTarget = new THREE.Vector3(player.position.x, player.position.y + 8, player.position.z + 16);
+      camera.position.lerp(camTarget, 0.08);
+      controls.target.lerp(new THREE.Vector3(player.position.x, player.position.y + 3, player.position.z), 0.15);
+      controls.update();
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    // Start
+    loadLevel(1);
+    requestAnimationFrame(animate);
+
+    // Resize
+    window.addEventListener('resize', () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    // Set AABBs for finish too
+    finishPad.userData = { w: 3, h: 0.3, d: 3 };
+  </script>
+</body>
+</html>
