@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Colorful 3D Obby</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin:0; height:100%; background:#111; font-family:system-ui, sans-serif; }
+    #hud {
+      position: fixed; top: 10px; left: 10px; color: #fff; z-index: 10;
+      background: rgba(0,0,0,0.45); padding: 10px 14px; border-radius: 10px;
+      font-size: 14px; line-height: 1.4;
+    }
+    #hud b { color: #ffd700; }
+    #msg {
+      position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+      color:#fff; background: rgba(0,0,0,0.45); padding: 8px 14px; border-radius: 8px; z-index:10;
+      font-size: 13px;
+    }
+    #btnReset {
+      margin-top: 8px; padding: 6px 10px; border-radius:6px; background:#222; color:#fff; border:1px solid #444; cursor:pointer;
+    }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><b>Colorful 3D Obby</b> — Level: <span id="levelNum">1</span> / 3</div>
+    <div>Controls: <b>Arrow Keys</b> (WASD also works) + Space to jump</div>
+    <div>Goal: Reach the glowing rainbow finish pad</div>
+    <button id="btnReset">Reset</button>
+  </div>
+  <div id="msg">Tip: Arrow keys give precise control.</div>
+
+  <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.157.0/examples/js/controls/OrbitControls.js"></script>
+
+  <script>
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111111);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(0, 10, 18);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enablePan = false;
+    controls.enableZoom = false;
+    controls.target.set(0, 4, 0);
+
+    // Lights
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.9));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(15, 25, 10);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    // Floor
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(200, 200),
+      new THREE.MeshPhongMaterial({ color: 0x222222, side: THREE.DoubleSide })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Player cube (bright cyan)
+    const player = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 2, 1),
+      new THREE.MeshPhongMaterial({ color: 0x00ffff })
+    );
+    player.castShadow = true;
+    scene.add(player);
+
+    // Finish pad (rainbow gradient)
+    const finishPad = new THREE.Mesh(
+      new THREE.BoxGeometry(3, 0.3, 3),
+      new THREE.MeshPhongMaterial({ color: 0xff00ff, emissive: 0xff00ff, emissiveIntensity: 0.7 })
+    );
+    finishPad.receiveShadow = true;
+    scene.add(finishPad);
+
+    const levelNumEl = document.getElementById('levelNum');
+    const btnReset = document.getElementById('btnReset');
+
+    // Physics
+    const GRAVITY = -28;
+    const JUMP_VELOCITY = 12;
+    const MOVE_ACCEL = 80;
+    const MOVE_MAX_SPEED = 10;
+    const FRICTION = 20;
+
+    const keys = { left:false, right:false, up:false, down:false, jump:false };
+    let velocity = new THREE.Vector3(0, 0, 0);
+    let onGround = false;
+
+    let obstacles = [];
+    let level = 1;
+
+    function makePlatform(w,h,d,color,x,y,z) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(w,h,d),
+        new THREE.MeshPhongMaterial({ color })
+      );
+      mesh.position.set(x,y,z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData = { w,h,d };
+      scene.add(mesh);
+      obstacles.push(mesh);
+      return mesh;
+    }
+
+    function clearLevel() {
+      obstacles.forEach(o => scene.remove(o));
+      obstacles = [];
+    }
+
+    function buildLevel1() {
+      clearLevel();
+      levelNumEl.textContent = '1';
+      makePlatform(6,0.4,6,0xff4444,0,1,0);
+      makePlatform(4,0.4,4,0x44ff44,8,1,-2);
+      makePlatform(3,0.4,3,0x4444ff,14,2,-2);
+      makePlatform(3,0.4,3,0xffff44,20,3.2,-1);
+      makePlatform(3,0.4,3,0xff8844,26,4.4,0);
+      finishPad.position.set(32,5,0);
+      player.position.set(0,3,0);
+    }
+
+    function buildLevel2() {
+      clearLevel();
+      levelNumEl.textContent = '2';
+      makePlatform(6,0.4,6,0x8844ff,0,1,0);
+      makePlatform(3,0.4,3,0x44ffff,8,2,0);
+      makePlatform(3,0.4,3,0xff44aa,14,3,0);
+      makePlatform(3,0.4,3,0x44ff88,20,4,0);
+      finishPad.position.set(26,4.5,0);
+      player.position.set(0,3,0);
+    }
+
+    function buildLevel3() {
+      clearLevel();
+      levelNumEl.textContent = '3';
+      makePlatform(6,0.4,6,0xffaa44,0,1,0);
+      makePlatform(2.2,0.4,2.2,0x44ffaa,6,2,0);
+      makePlatform(2.2,0.4,2.2,0xaa44ff,10,2.6,0);
+      makePlatform(2.2,0.4,2.2,0xff4444,14,3.2,0);
+      finishPad.position.set(18,3.6,0);
+      player.position.set(0,3,0);
+    }
+
+    function loadLevel(n) {
+      level = n;
+      if (level === 1) buildLevel1();
+      else if (level === 2) buildLevel2();
+      else buildLevel3();
+    }
+
+    // Input (arrow keys + WASD)
+    window.addEventListener('keydown', e => {
+      switch(e.code) {
+        case 'ArrowLeft': case 'KeyA': keys.left = true; break;
+        case 'ArrowRight': case 'KeyD': keys.right = true; break;
+        case 'ArrowUp': case 'KeyW': keys.up = true; break;
+        case 'ArrowDown': case 'KeyS': keys.down = true; break;
+        case 'Space': keys.jump = true; break;
+      }
+    });
+    window.addEventListener('keyup', e => {
+      switch(e.code) {
+        case 'ArrowLeft': case 'KeyA': keys.left = false; break;
+        case 'ArrowRight': case 'KeyD': keys.right = false; break;
+        case 'ArrowUp': case 'KeyW': keys.up = false; break;
+        case 'ArrowDown': case 'KeyS': keys.down = false; break;
+        case 'Space': keys.jump = false; break;
+      }
+    });
+
+    btnReset.addEventListener('click', () => loadLevel(1));
+
+    function animate() {
+      const dt = 0.016;
+      velocity.y += GRAVITY * dt;
+      let inputX=
