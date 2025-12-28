@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>3D Obby — Fixed Version</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <style>
+    html,body { margin:0; height:100%; background:#0b0d12; font-family:system-ui, Arial, sans-serif; }
+    #hud {
+      position:fixed; top:10px; left:10px; color:#eaf2ff; z-index:10;
+      background:rgba(0,0,0,0.35); padding:10px 12px; border-radius:8px; backdrop-filter: blur(4px);
+      display:flex; gap:12px; align-items:center; font-size:14px;
+    }
+    #hud .pill { background:rgba(255,255,255,0.1); padding:6px 8px; border-radius:999px; }
+    #centerHint {
+      position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+      color:#c9d7ff; z-index:10; background:rgba(0,0,0,0.45); padding:14px 18px; border-radius:10px; text-align:center;
+      max-width:560px; line-height:1.4;
+    }
+    #startBtn {
+      margin-top:10px; padding:8px 14px; border-radius:8px; border:none; cursor:pointer; font-weight:600;
+      background:#5a84ff; color:#fff;
+    }
+    #mobileControls { position:fixed; bottom:18px; left:18px; right:18px; display:flex; justify-content:space-between; z-index:10; }
+    .pad { display:grid; grid-template-columns:repeat(3,48px); grid-template-rows:repeat(3,48px); gap:6px; background:rgba(0,0,0,0.25); padding:10px; border-radius:14px; }
+    .btn { width:48px; height:48px; background:rgba(255,255,255,0.09); border:1px solid rgba(255,255,255,0.15); border-radius:12px; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; }
+    .btn:active { background:rgba(255,255,255,0.22); }
+    #jumpBtn { width:76px; height:76px; border-radius:999px; background:#59d38a; border:none; color:#052; font-weight:800; display:flex; align-items:center; justify-content:center; }
+    #canvas { display:block; width:100vw; height:100vh; outline:none; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="pill">Level: <span id="levelLabel">1</span></div>
+    <div class="pill">Time: <span id="timeLabel">0.0s</span></div>
+    <div class="pill">Deaths: <span id="deathsLabel">0</span></div>
+    <div class="pill">Jumps: <span id="jumpsLabel">0</span></div>
+    <div class="pill">Coins: <span id="coinsLabel">0</span></div>
+  </div>
+
+  <div id="centerHint">
+    <div style="font-size:18px; font-weight:700; margin-bottom:6px;">3D Obby</div>
+    <div>Desktop: Click Start, move mouse to look, WASD to move, Space to jump.<br/>Mobile: Use on‑screen controls, drag to look.</div>
+    <button id="startBtn">Start</button>
+    <div style="margin-top:8px; opacity:0.8;">Tip: Reach the glowing goal to finish the level. Collect coins!</div>
+  </div>
+
+  <div id="mobileControls" style="display:none;">
+    <div class="pad" id="movePad">
+      <div></div><div class="btn" data-dir="forward">↑</div><div></div>
+      <div class="btn" data-dir="left">←</div><div></div><div class="btn" data-dir="right">→</div>
+      <div></div><div class="btn" data-dir="back">↓</div><div></div>
+    </div>
+    <button id="jumpBtn">JUMP</button>
+  </div>
+
+  <canvas id="canvas" tabindex="0"></canvas>
+
+  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+
+  <script>
+  (() => {
+    // ... [setup code omitted for brevity: scene, camera, lights, materials, player, input, HUD, levels] ...
+
+    // Physics collision resolution (fixed block)
+    function movePlayer(dt) {
+      // ... [movement + gravity code] ...
+
+      function sweep(axis, delta) {
+        player.position[axis] += delta;
+        playerAABB.pos.copy(player.position);
+
+        // Floor collision
+        if (player.position.y - playerHalf.y < floorTopY) {
+          player.position.y = floorTopY + playerHalf.y;
+          vel.y = Math.max(vel.y, 0);
+          onGround = true;
+        }
+
+        // Collide with level items
+        for (const m of currentLevelMeshes) {
+          const t = m.userData.type;
+          const box = aabbFromMesh(m);
+
+          // Coin pickup
+          if (t === 'coin' && aabbOverlap(playerAABB, box)) {
+            coinsCollected++; updateHUD();
+            scene.remove(m);
+            currentLevelMeshes = currentLevelMeshes.filter(x => x !== m);
+            continue;
+          }
+
+          // Danger
+          if (t === 'danger' && aabbOverlap(playerAABB, box)) {
+            deaths++; updateHUD(); respawn(); return;
+          }
+
+          // Goal
+          if (t === 'goal' && aabbOverlap(playerAABB, box)) { nextLevel(); return; }
+
+          // Checkpoint
+          if (t === 'checkpoint' && aabbOverlap(playerAABB, box)) {
+            lastCheckpoint.copy(m.position);
+            lastCheckpoint.y = m.position.y + playerHalf.y + 0.02;
+          }
+
+          // Solid collision
+          if ((t === 'platform' || t === 'moving' || t === 'checkpoint') && aabbOverlap(playerAABB, box)) {
+            const dx = (box.pos.x - playerAABB.pos.x);
+            const dy = (box.pos.y - playerAABB.pos.y);
+            const dz = (box.pos.z - playerAABB.pos.z);
+
+            const overlapX = (box.size.x + playerAABB.size.x)/2 - Math.abs(dx);
+            const overlapY = (box.size.y + playerAABB.size.y)/2 - Math.abs(dy);
+            const overlapZ = (box.size.z + playerAABB.size.z)/2 - Math.abs(dz);
+
+            if (overlapY <= overlapX && overlapY <= overlapZ) {
+              const sign = Math.sign(dy);
+              player.position.y += overlapY * sign;
+              playerAABB.pos.copy(player.position);
+              if (sign < 0) { vel.y = Math.min(vel.y, 0); onGround = true; }
+              else { vel.y = Math.max(vel.y, 0); }
+            } else if (overlapX < overlapZ) {
+              const sign = Math.sign(dx);
+              player.position.x += overlapX * sign;
+              vel.x = 0;
+              playerAABB.pos.copy(player.position);
+            } else {
+              const sign = Math.sign(dz);
+              player.position.z += overlapZ * sign;
+              vel.z = 0;
+              playerAABB.pos.copy(player.position);
+            }
+          }
+        }
+      }
+
+      onGround = false;
+      sweep('x', vel.x * dt);
+      sweep('y', vel.y * dt);
+      sweep('z', vel.z * dt);
+    }
+
+    // ... [rest of game loop, movers, camera, start button, coin rotation] ...
+  })();
+  </script>
+</body>
+</html>
