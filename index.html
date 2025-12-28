@@ -27,7 +27,7 @@
   <div id="hud">
     <div><b>Colorful 3D Obby</b> — Level: <span id="levelNum">1</span> / 3</div>
     <div>Controls: <b>Arrow Keys</b> (WASD also works) + Space to jump</div>
-    <div>Goal: Reach the glowing rainbow finish pad</div>
+    <div>Goal: Reach the glowing finish pad</div>
     <button id="btnReset">Reset</button>
   </div>
   <div id="msg">Tip: Arrow keys give precise control.</div>
@@ -41,7 +41,6 @@
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
     document.body.appendChild(renderer.domElement);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
@@ -56,7 +55,6 @@
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.9));
     const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
     dirLight.position.set(15, 25, 10);
-    dirLight.castShadow = true;
     scene.add(dirLight);
 
     // Floor
@@ -65,23 +63,20 @@
       new THREE.MeshPhongMaterial({ color: 0x222222, side: THREE.DoubleSide })
     );
     floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
     scene.add(floor);
 
-    // Player cube (bright cyan)
+    // Player cube
     const player = new THREE.Mesh(
       new THREE.BoxGeometry(1, 2, 1),
       new THREE.MeshPhongMaterial({ color: 0x00ffff })
     );
-    player.castShadow = true;
     scene.add(player);
 
-    // Finish pad (rainbow gradient)
+    // Finish pad
     const finishPad = new THREE.Mesh(
       new THREE.BoxGeometry(3, 0.3, 3),
       new THREE.MeshPhongMaterial({ color: 0xff00ff, emissive: 0xff00ff, emissiveIntensity: 0.7 })
     );
-    finishPad.receiveShadow = true;
     scene.add(finishPad);
 
     const levelNumEl = document.getElementById('levelNum');
@@ -107,9 +102,6 @@
         new THREE.MeshPhongMaterial({ color })
       );
       mesh.position.set(x,y,z);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.userData = { w,h,d };
       scene.add(mesh);
       obstacles.push(mesh);
       return mesh;
@@ -161,7 +153,7 @@
       else buildLevel3();
     }
 
-    // Input (arrow keys + WASD)
+    // Input
     window.addEventListener('keydown', e => {
       switch(e.code) {
         case 'ArrowLeft': case 'KeyA': keys.left = true; break;
@@ -183,7 +175,15 @@
 
     btnReset.addEventListener('click', () => loadLevel(1));
 
+    // Game loop
     function animate() {
       const dt = 0.016;
       velocity.y += GRAVITY * dt;
-      let inputX=
+
+      let inputX=0, inputZ=0;
+      if (keys.left) inputX -= 1;
+      if (keys.right) inputX += 1;
+      if (keys.up) inputZ -= 1;
+      if (keys.down) inputZ += 1;
+
+      velocity.x
